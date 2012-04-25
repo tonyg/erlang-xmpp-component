@@ -6,7 +6,7 @@
 -export([lookup_attr/2, lookup_attr/3]).
 -export([lookup_attr_val/2, lookup_attr_val/3]).
 -export([lookup_attr_default/3, lookup_attr_default/4]).
--export([lookup_child/3]).
+-export([lookup_child/3, lookup_children/3, lookup_children/2]).
 
 to_xml(V) ->
     to_xml(V, [{?NS_JABBER_COMPONENT_ACCEPT, ""}]).
@@ -142,3 +142,13 @@ lookup_child(NSURI, LocalName, [E = #xe{nsuri = NSURI, localName = LocalName} | 
     {found, E};
 lookup_child(NSURI, LocalName, [_ | Rest]) ->
     lookup_child(NSURI, LocalName, Rest).
+
+lookup_children(NSURI, LocalName, #xe{children = Kids}) ->
+    lookup_children(NSURI, LocalName, Kids);
+lookup_children(NSURI, LocalName, Kids) ->
+    [K || K = #xe{nsuri = N, localName = L} <- Kids, N =:= NSURI, L =:= LocalName].
+
+lookup_children(NSURI, #xe{children = Kids}) ->
+    lookup_children(NSURI, Kids);
+lookup_children(NSURI, Kids) ->
+    [K || K = #xe{nsuri = N} <- Kids, N =:= NSURI].
