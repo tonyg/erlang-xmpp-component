@@ -100,8 +100,10 @@ analyze_presence(E) ->
                    priority = int_child(?NS_JABBER_COMPONENT_ACCEPT, "priority", E),
                    extensions = extract_extensions(E)}.
 
-analyze_iq(E) ->
-    #xmpp_iq{children = E#xe.children}.
+analyze_iq(#xe{children = []}) ->
+    #xmpp_iq{element = undefined};
+analyze_iq(#xe{children = [Element]}) ->
+    #xmpp_iq{element = Element}.
 
 extract_extensions(#xe{children = Children}) ->
     [C || C = #xe{nsuri = NSURI} <- Children, NSURI =/= ?NS_JABBER_COMPONENT_ACCEPT].
@@ -145,9 +147,12 @@ body_to_xe(#xmpp_presence{show = Show,
                            add_kid(?NS_JABBER_COMPONENT_ACCEPT, "status", Status,
                                    add_kid(?NS_JABBER_COMPONENT_ACCEPT, "priority", PriorityStr,
                                            Extensions)))};
-body_to_xe(#xmpp_iq{children = Children}) ->
-    #xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "presence",
-        children = Children};
+body_to_xe(#xmpp_iq{element = undefined}) ->
+    #xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "iq",
+        children = []};
+body_to_xe(#xmpp_iq{element = Element}) ->
+    #xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "iq",
+        children = [Element]};
 body_to_xe(#xmpp_error{stanza_kind = Kind,
                        error_type = Type,
                        condition = Condition,
