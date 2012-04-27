@@ -45,6 +45,7 @@ send_xml(V, State = #state{sock = Sock}) ->
 handle_sax_event(startDocument, State) -> State;
 handle_sax_event({startPrefixMapping, _Prefix, _URI}, State) -> State;
 handle_sax_event({endPrefixMapping, _Prefix}, State) -> State;
+handle_sax_event({ignorableWhitespace, _Str}, State) -> State;
 handle_sax_event({startElement, "http://etherx.jabber.org/streams", "stream", _, Attrs},
                  State = #state{shared_secret = Secret,
                                 state = waiting_for_server_stream_header}) ->
