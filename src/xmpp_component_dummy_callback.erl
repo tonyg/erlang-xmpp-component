@@ -18,8 +18,11 @@
 
 -module(xmpp_component_dummy_callback).
 
--behaviour(gen_server).
--export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
+-behaviour(xmpp_component).
+-export([init/2, terminate/2, code_change/3, connection_change/2,
+         disco_info/2, disco_items/2, vcard/2,
+         handle_iq/6, handle_message/3, handle_presence/6,
+         handle_stanza/3]).
 
 -include("xmpp_component_xml.hrl").
 -include("xmpp_component_stanza.hrl").
@@ -40,7 +43,7 @@ active_message(Body) ->
 
 %%---------------------------------------------------------------------------
 
-init([ConnectorPid | _Args]) ->    
+init(ConnectorPid, _Args) ->
     {ok, #state{connector_pid = ConnectorPid}}.
 
 terminate(_Reason, _State) ->
@@ -49,65 +52,60 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-handle_call({iq, "get", To, _Header, #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "query"}},
-            _From, State) ->
-    I = #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "query",
-            children = [#xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "identity",
-                            attributes = [#xa{localName = "category", value = "robot"},
-                                          #xa{localName = "type", value = "erlang"},
-                                          #xa{localName = "name", value = To}]},
-                        #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "feature",
-                            attributes = [#xa{localName = "var",
-                                              value = "http://jabber.org/protocol/disco#info"}]},
-                        #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "feature",
-                            attributes = [#xa{localName = "var",
-                                              value = "vcard-temp"}]}]},
-    {reply, {ok, I}, State};
-handle_call({iq, "get", To, _Header, #xe{nsuri = "vcard-temp", localName = "vCard"}},
-            _From, State) ->
-    {reply, {ok, #xe{nsuri = "vcard-temp", localName = "vCard",
-                     children = [#xe{nsuri = "vcard-temp", localName = "FN",
-                                     children = ["Robot " ++ To]}]}}, State};
-handle_call({iq, _IqType, _IqTo, _Header, _Element}, _From, State) ->
-    {reply, {error, "cancel", "feature-not-implemented", "Not yet implemented"}, State};
-handle_call(_Request, _From, State) ->
-    {stop, {bad_call, _Request}, State}.
+connection_change(_ConnectedOrDisconnected, State) ->
+    {ok, State}.
 
-handle_cast({xmpp, H, #xmpp_message{body = undefined, extensions = Xs}}, State) ->
+disco_info(_Who, State) ->
+    {ok,
+     [#disco_identity{category = "robot", type = "erlang", name = "Demo Robot"}],
+     [?NS_XMPP_DISCO_ITEMS, ?NS_VCARD_TEMP],
+     State}.
+
+disco_items(_Who, State) ->
+    {ok, [], State}.
+
+vcard(Who, State) ->
+    {ok, [#xe{nsuri = "vcard-temp", localName = "FN", children = ["Robot " ++ Who]}], State}.
+
+handle_iq(_From, _To, _Type, _Header, _Element, State) ->
+    {error, {"cancel", "feature-not-implemented", "Not yet implemented"}, State}.
+
+handle_message(H, #xmpp_message{body = undefined, extensions = Xs}, State) ->
     case xmpp_component_xml:lookup_children("http://jabber.org/protocol/chatstates", Xs) of
         [#xe{localName = "composing"} | _] ->
-            {noreply, send(xmpp_component_stanza:flip_header(H, "chat"),
-                           active_message("You are typing!"),
-                           State)};
+            {ok, send(xmpp_component_stanza:flip_header(H, "chat"),
+                      active_message("You are typing!"),
+                      State)};
         [#xe{localName = "paused"} | _] ->
-            {noreply, send(xmpp_component_stanza:flip_header(H, "chat"),
-                           active_message("You have paused!"),
-                           State)};
+            {ok, send(xmpp_component_stanza:flip_header(H, "chat"),
+                      active_message("You have paused!"),
+                      State)};
         _ ->
-            {noreply, State}
+            {ok, State}
     end;
-handle_cast({xmpp, H, #xmpp_message{body = B}}, State)
+handle_message(H, #xmpp_message{body = B}, State)
   when B =/= undefined ->
-    {noreply, send(xmpp_component_stanza:flip_header(H, "chat"),
-                   active_message("Acknowledged: " ++ B),
-                   State)};
-handle_cast({xmpp, H = #xmpp_header{type = "subscribe"}, #xmpp_presence{}},
-            State = #state{connector_pid = ConnectorPid}) ->
+    {ok, send(xmpp_component_stanza:flip_header(H, "chat"),
+              active_message("Acknowledged: " ++ B),
+              State)};
+handle_message(_Header, _Body, State) ->
+    io:format("IGNORING ~p~n", [{_Header, _Body}]),
+    {ok, State}.
+
+handle_presence(_From, _To, "subscribe", H, _Body,
+                State = #state{connector_pid = ConnectorPid}) ->
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "subscribed"), #xmpp_presence{}),
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, undefined), #xmpp_presence{}),
-    {noreply, State};
-handle_cast({xmpp, H = #xmpp_header{type = "unsubscribe"}, #xmpp_presence{}},
-            State = #state{connector_pid = ConnectorPid}) ->
+    {ok, State};
+handle_presence(_From, _To, "unsubscribe", H, _Body,
+                State = #state{connector_pid = ConnectorPid}) ->
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "unavailable"), #xmpp_presence{}),
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "unsubscribed"), #xmpp_presence{}),
-    {noreply, State};
-handle_cast({xmpp, _Header, _Body}, State) ->
+    {ok, State};
+handle_presence(_From, _To, _Type, _Header, _Body, State) ->
     io:format("IGNORING ~p~n", [{_Header, _Body}]),
-    {noreply, State};
-handle_cast({connected_to_server, _}, State) ->
-    {noreply, State};
-handle_cast(_Request, State) ->
-    {stop, {bad_cast, _Request}, State}.
+    {ok, State}.
 
-handle_info(_Message, State) ->
-    {stop, {bad_info, _Message}, State}.
+handle_stanza(_Header, _Body, State) ->
+    io:format("IGNORING ~p~n", [{_Header, _Body}]),
+    {ok, State}.

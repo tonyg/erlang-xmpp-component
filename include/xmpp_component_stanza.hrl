@@ -25,3 +25,8 @@
 
 -define(NS_XMPP_STANZAS, "urn:ietf:params:xml:ns:xmpp-stanzas").
 -define(NS_XMPP_DISCO_INFO, "http://jabber.org/protocol/disco#info").
+-define(NS_XMPP_DISCO_ITEMS, "http://jabber.org/protocol/disco#items").
+-define(NS_VCARD_TEMP, "vcard-temp").
+
+-record(disco_identity, {category, type, name}).
+-record(disco_item, {jid, name}).

@@ -32,11 +32,13 @@ start_link(Args) ->
 %%---------------------------------------------------------------------------
 
 -record(state, {server_host, server_port, shared_secret, component_name,
-                callback_pid, parser_pid, sock, state, stream_id, sax_stack}).
+                callback_mod, callback_state,
+                parser_pid, sock, state, stream_id, sax_stack}).
 
 ensure_connected(State = #state{server_host = ServerHost,
                                 server_port = ServerPort,
-                                callback_pid = CallbackPid,
+                                callback_mod = Mod,
+                                callback_state = OldCBState,
                                 sock = disconnected}) ->
     case gen_tcp:connect(ServerHost, ServerPort, [binary,
                                                   {packet, 0},
@@ -44,11 +46,12 @@ ensure_connected(State = #state{server_host = ServerHost,
         {ok, Sock} ->
             case State#state.parser_pid of
                 none ->
-                    ok = gen_server:cast(CallbackPid, {connected_to_server, true}),
+                    {ok, NewCBState} = Mod:connection_change(connected, OldCBState),
                     SelfPid = self(),
                     next_action(State#state{sock = Sock,
                                             parser_pid =
                                                 spawn_link(fun () -> parser_main(SelfPid) end),
+                                            callback_state = NewCBState,
                                             state = new_connection})
             end;
         {error, Reason} ->
@@ -127,10 +130,110 @@ handle_sax_event(E, _State = #state{sax_stack = Stack}) ->
 translate_attrs(Attrs) ->
     [#xa{prefix = P, nsuri = N, localName = L, value = V} || {N, P, L, V} <- Attrs].
 
+disco_feature_xe(Var) ->
+    #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "feature",
+        attributes = [#xa{localName = "var", value = Var}]}.
+
+disco_info_reply(Mod, Identities, Features) ->
+    #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "query",
+        children =
+            [#xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "identity",
+                 attributes = [#xa{localName = "category", value = Category},
+                               #xa{localName = "type", value = Type},
+                               #xa{localName = "name", value = Name}]}
+             || #disco_identity{category = Category,
+                                type = Type,
+                                name = Name} <- Identities] ++
+            [disco_feature_xe(?NS_XMPP_DISCO_INFO)] ++
+            [disco_feature_xe(Feature) || Feature <- Features]}.
+
+disco_items_reply(Items) ->
+    #xe{nsuri = ?NS_XMPP_DISCO_ITEMS, localName = "query",
+        children =
+            [#xe{nsuri = ?NS_XMPP_DISCO_ITEMS, localName = "item",
+                 attributes = [#xa{localName = "jid", value = Jid},
+                               #xa{localName = "name", value = Name}]}
+             || #disco_item{jid = Jid, name = Name} <- Items]}.
+
+dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn = #xe{nsuri = NSURI, localName = LocalName},
+            State = #state{callback_mod = Mod, callback_state = OldCBState}) ->
+    case {IqType, NSURI, LocalName} of
+        {"get", ?NS_XMPP_DISCO_INFO, "query"} ->
+            case erlang:function_exported(Mod, disco_info, 2) of
+                true ->
+                    case Mod:disco_info(IqTo, OldCBState) of
+                        {ok, Identities, Features, NewCBState} ->
+                            handle_iq_reply(Header,
+                                            disco_info_reply(Mod, Identities, Features),
+                                            NewCBState,
+                                            State);
+                        {error, Details, NewCBState} ->
+                            handle_iq_error(Header, ElementIn, Details, NewCBState, State)
+                    end;
+                false ->
+                    default_dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+            end;
+        {"get", ?NS_XMPP_DISCO_ITEMS, "query"} ->
+            case erlang:function_exported(Mod, disco_items, 2) of
+                true ->
+                    case Mod:disco_items(IqTo, OldCBState) of
+                        {ok, Items, NewCBState} ->
+                            handle_iq_reply(Header, disco_items_reply(Items), NewCBState, State);
+                        {error, Details, NewCBState} ->
+                            handle_iq_error(Header, ElementIn, Details, NewCBState, State)
+                    end;
+                false ->
+                    default_dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+            end;
+        {"get", ?NS_VCARD_TEMP, "vCard"} ->
+            case erlang:function_exported(Mod, vcard, 2) of
+                true ->
+                    case Mod:vcard(IqTo, OldCBState) of
+                        {ok, VcardElements, NewCBState} ->
+                            handle_iq_reply(Header,
+                                            #xe{nsuri = ?NS_VCARD_TEMP, localName = "vCard",
+                                                children = VcardElements},
+                                            NewCBState,
+                                            State);
+                        {error, Details, NewCBState} ->
+                            handle_iq_error(Header, ElementIn, Details, NewCBState, State)
+                    end;
+                false ->
+                    default_dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+            end;
+        _ ->
+            default_dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+    end.
+
+default_dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn,
+                    State = #state{callback_mod = Mod, callback_state = OldCBState}) ->
+    case Mod:handle_iq(IqFrom, IqTo, IqType, Header, ElementIn, OldCBState) of
+        {reply, ElementOut, NewCBState} ->
+            handle_iq_reply(Header, ElementOut, NewCBState, State);
+        {error, Details, NewCBState} ->
+            handle_iq_error(Header, ElementIn, Details, NewCBState, State)
+    end.
+
+handle_iq_reply(Header, ElementOut, NewCBState, State) ->
+    send_stanza(xmpp_component_stanza:to_xe(
+                  {xmpp_component_stanza:flip_header(Header, "result"),
+                   #xmpp_iq{element = ElementOut}}),
+                State#state{callback_state = NewCBState}).
+
+handle_iq_error(Header, ElementIn, {ErrorType, Condition, Text}, NewCBState, State) ->
+    send_stanza(xmpp_component_stanza:to_xe(
+                  {xmpp_component_stanza:flip_header(Header, "error"),
+                   #xmpp_error{stanza_kind = "iq",
+                               error_type = ErrorType,
+                               condition = Condition,
+                               text = Text,
+                               extensions = [ElementIn]}}),
+                State#state{callback_state = NewCBState}).
+
 handle_stanza(#xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "handshake"},
               State = #state{state = waiting_for_server_handshake}) ->
     State#state{state = running};
-handle_stanza(E, State = #state{callback_pid = CallbackPid}) ->
+handle_stanza(E, State = #state{callback_mod = Mod, callback_state = OldCBState}) ->
     io:format("HANDLING ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
     {Header, Body} = xmpp_component_stanza:from_xe(E),
     case Body of
@@ -140,29 +243,22 @@ handle_stanza(E, State = #state{callback_pid = CallbackPid}) ->
                     %% No reply permitted. Unsolicited result, too,
                     %% which is weird! Just ignore it.
                     State;
-                #xmpp_header{type = IqType, to = IqTo} ->
+                #xmpp_header{type = IqType, from = IqFrom, to = IqTo} ->
                     %% "get" or "set". "error" is dealt with elsewhere
                     %% during parsing.
-                    case gen_server:call(CallbackPid, {iq, IqType, IqTo, Header, ElementIn}) of
-                        {ok, ElementOut} ->
-                            send_stanza(xmpp_component_stanza:to_xe(
-                                          {xmpp_component_stanza:flip_header(Header, "result"),
-                                           #xmpp_iq{element = ElementOut}}),
-                                        State);
-                        {error, ErrorType, Condition, Text} ->
-                            send_stanza(xmpp_component_stanza:to_xe(
-                                          {xmpp_component_stanza:flip_header(Header, "error"),
-                                           #xmpp_error{stanza_kind = "iq",
-                                                       error_type = ErrorType,
-                                                       condition = Condition,
-                                                       text = Text,
-                                                       extensions = [ElementIn]}}),
-                                        State)
-                    end
+                    dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
             end;
+        #xmpp_message{} ->
+            {ok, NewCBState} = Mod:handle_message(Header, Body, OldCBState),
+            State#state{callback_state = NewCBState};
+        #xmpp_presence{} ->
+            #xmpp_header{type = PresenceType, from = PresenceFrom, to = PresenceTo} = Header,
+            {ok, NewCBState} = Mod:handle_presence(PresenceFrom, PresenceTo, PresenceType,
+                                                   Header, Body, OldCBState),
+            State#state{callback_state = NewCBState};
         _ ->
-            ok = gen_server:cast(CallbackPid, {xmpp, Header, Body}),
-            State
+            {ok, NewCBState} = Mod:handle_stanza(Header, Body, OldCBState),
+            State#state{callback_state = NewCBState}
     end.
 
 %%---------------------------------------------------------------------------
@@ -186,17 +282,21 @@ parser_main(ConnectorPid) ->
 %%---------------------------------------------------------------------------
 
 init([ServerHost, ServerPort, SharedSecret, ComponentName, CallbackMod, CallbackArgs]) ->
-    {ok, CallbackPid} = gen_server:start_link(CallbackMod, [self() | CallbackArgs], []),
+    {ok, CallbackState} = CallbackMod:init(self(), CallbackArgs),
     {ok, ensure_connected(#state{server_host = ServerHost,
                                  server_port = ServerPort,
                                  shared_secret = SharedSecret,
                                  component_name = ComponentName,
-                                 callback_pid = CallbackPid,
+                                 callback_mod = CallbackMod,
+                                 callback_state = CallbackState,
                                  parser_pid = none,
                                  sock = disconnected,
                                  sax_stack = []})}.
 
-terminate(Reason, _State = #state{parser_pid = ParserPid}) ->
+terminate(Reason, _State = #state{parser_pid = ParserPid,
+                                  callback_mod = Mod,
+                                  callback_state = OldCBState}) ->
+    _ = Mod:terminate(Reason, OldCBState),
     exit(ParserPid, {connector_terminated, Reason}),
     ok.
 
@@ -220,12 +320,14 @@ handle_info({send_stanza, E}, State) ->
     {noreply, send_stanza(E, State)};
 handle_info(ensure_connected, State) ->
     {noreply, ensure_connected(State)};
-handle_info({tcp_closed, _Sock}, State = #state{callback_pid = CallbackPid,
+handle_info({tcp_closed, _Sock}, State = #state{callback_mod = Mod,
+                                                callback_state = OldCBState,
                                                 parser_pid = ParserPid}) ->
     exit(ParserPid, normal),
-    ok = gen_server:cast(CallbackPid, {connected_to_server, false}),
+    {ok, NewCBState} = Mod:connection_change(disconnected, OldCBState),
     {noreply, ensure_connected(State#state{parser_pid = none,
                                            sock = disconnected,
+                                           callback_state = NewCBState,
                                            sax_stack = []})};
 handle_info(_Message, State) ->
     {stop, {bad_info, _Message}, State}.
