@@ -29,5 +29,9 @@
                   xmerl
                  ]},
   {mod, {xmpp_component_app, []}},
-  {env, []}
+  {env, [{server_host, "localhost"},
+         {server_port, 8888},
+         {shared_secret, "secret"},
+         {handler_module, xmpp_component_dummy_callback},
+         {handler_module_args, []}]}
  ]}.

@@ -19,6 +19,7 @@
 -module(xmpp_component_connector).
 
 -include("xmpp_component_xml.hrl").
+-include("xmpp_component_stanza.hrl").
 
 -behaviour(gen_server).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
@@ -30,18 +31,31 @@ start_link(Args) ->
 
 %%---------------------------------------------------------------------------
 
--record(state, {server_host, server_port, component_name, shared_secret,
-                callback_mfa, callback_state,
-                parser_pid, sock, state, stream_id, sax_stack}).
+-record(state, {server_host, server_port, shared_secret, component_name,
+                callback_pid, parser_pid, sock, state, stream_id, sax_stack}).
 
 ensure_connected(State = #state{server_host = ServerHost,
                                 server_port = ServerPort,
+                                callback_pid = CallbackPid,
                                 sock = disconnected}) ->
-    {ok, Sock} = gen_tcp:connect(ServerHost, ServerPort,
-                                 [binary,
-                                  {packet, 0},
-                                  {active, true}]),
-    next_action(State#state{sock = Sock, state = new_connection});
+    case gen_tcp:connect(ServerHost, ServerPort, [binary,
+                                                  {packet, 0},
+                                                  {active, true}]) of
+        {ok, Sock} ->
+            case State#state.parser_pid of
+                none ->
+                    ok = gen_server:cast(CallbackPid, {connected_to_server, true}),
+                    SelfPid = self(),
+                    next_action(State#state{sock = Sock,
+                                            parser_pid =
+                                                spawn_link(fun () -> parser_main(SelfPid) end),
+                                            state = new_connection})
+            end;
+        {error, Reason} ->
+            error_logger:warning_report({?MODULE, connect_failed, Reason, ServerHost, ServerPort}),
+            timer:send_after(5000, ensure_connected),
+            State
+    end;
 ensure_connected(State) ->
     State.
 
@@ -59,6 +73,10 @@ next_action(State) ->
 send_xml(V, State = #state{sock = Sock}) ->
     ok = gen_tcp:send(Sock, xmpp_component_xml:to_xml(V)),
     State.
+
+send_stanza(E, State) ->
+    io:format("SENDING ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
+    send_xml(E, State).
 
 handle_sax_event(startDocument, State) -> State;
 handle_sax_event({startPrefixMapping, _Prefix, _URI}, State) -> State;
@@ -112,10 +130,40 @@ translate_attrs(Attrs) ->
 handle_stanza(#xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "handshake"},
               State = #state{state = waiting_for_server_handshake}) ->
     State#state{state = running};
-handle_stanza(E, State = #state{callback_mfa = {M,F,A}, callback_state = OldCallbackState}) ->
-    NewCallbackState = apply(M, F, [OldCallbackState, self(), E | A]),
-    io:format("STANZA ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
-    State#state{callback_state = NewCallbackState}.
+handle_stanza(E, State = #state{callback_pid = CallbackPid}) ->
+    io:format("HANDLING ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
+    {Header, Body} = xmpp_component_stanza:from_xe(E),
+    case Body of
+        #xmpp_iq{element = ElementIn} ->
+            case Header of
+                #xmpp_header{type = "result"} ->
+                    %% No reply permitted. Unsolicited result, too,
+                    %% which is weird! Just ignore it.
+                    State;
+                #xmpp_header{type = IqType, to = IqTo} ->
+                    %% "get" or "set". "error" is dealt with elsewhere
+                    %% during parsing.
+                    case gen_server:call(CallbackPid, {iq, IqType, IqTo, Header, ElementIn}) of
+                        {ok, ElementOut} ->
+                            send_stanza(xmpp_component_stanza:to_xe(
+                                          {xmpp_component_stanza:flip_header(Header, "result"),
+                                           #xmpp_iq{element = ElementOut}}),
+                                        State);
+                        {error, ErrorType, Condition, Text} ->
+                            send_stanza(xmpp_component_stanza:to_xe(
+                                          {xmpp_component_stanza:flip_header(Header, "error"),
+                                           #xmpp_error{stanza_kind = "iq",
+                                                       error_type = ErrorType,
+                                                       condition = Condition,
+                                                       text = Text,
+                                                       extensions = [ElementIn]}}),
+                                        State)
+                    end
+            end;
+        _ ->
+            ok = gen_server:cast(CallbackPid, {xmpp, Header, Body}),
+            State
+    end.
 
 %%---------------------------------------------------------------------------
 
@@ -137,15 +185,14 @@ parser_main(ConnectorPid) ->
 
 %%---------------------------------------------------------------------------
 
-init([ServerHost, ServerPort, ComponentName, SharedSecret, CallbackMFA, CallbackState]) ->
-    ConnectorPid = self(),
+init([ServerHost, ServerPort, SharedSecret, ComponentName, CallbackMod, CallbackArgs]) ->
+    {ok, CallbackPid} = gen_server:start_link(CallbackMod, [self() | CallbackArgs], []),
     {ok, ensure_connected(#state{server_host = ServerHost,
                                  server_port = ServerPort,
-                                 component_name = ComponentName,
                                  shared_secret = SharedSecret,
-                                 callback_mfa = CallbackMFA,
-                                 callback_state = CallbackState,
-                                 parser_pid = spawn_link(fun () -> parser_main(ConnectorPid) end),
+                                 component_name = ComponentName,
+                                 callback_pid = CallbackPid,
+                                 parser_pid = none,
                                  sock = disconnected,
                                  sax_stack = []})}.
 
@@ -159,6 +206,8 @@ code_change(_OldVsn, State, _Extra) ->
 handle_call(_Request, _From, State) ->
     {stop, {bad_call, _Request}, State}.
 
+handle_cast({xmpp, Header, Body}, State) ->
+    {noreply, send_stanza(xmpp_component_stanza:to_xe({Header, Body}), State)};
 handle_cast(_Request, State) ->
     {stop, {bad_cast, _Request}, State}.
 
@@ -168,7 +217,15 @@ handle_info({tcp, _Sock, Bytes}, State = #state{parser_pid = ParserPid}) ->
 handle_info({sax_event, SaxEvent}, State) ->
     {noreply, handle_sax_event(SaxEvent, State)};
 handle_info({send_stanza, E}, State) ->
-    io:format("SENDING ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
-    {noreply, send_xml(E, State)};
+    {noreply, send_stanza(E, State)};
+handle_info(ensure_connected, State) ->
+    {noreply, ensure_connected(State)};
+handle_info({tcp_closed, _Sock}, State = #state{callback_pid = CallbackPid,
+                                                parser_pid = ParserPid}) ->
+    exit(ParserPid, normal),
+    ok = gen_server:cast(CallbackPid, {connected_to_server, false}),
+    {noreply, ensure_connected(State#state{parser_pid = none,
+                                           sock = disconnected,
+                                           sax_stack = []})};
 handle_info(_Message, State) ->
     {stop, {bad_info, _Message}, State}.

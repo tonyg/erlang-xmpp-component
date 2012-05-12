@@ -21,7 +21,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/6]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -33,20 +33,18 @@
 %% API functions
 %% ===================================================================
 
-start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+start_link(Hostname, Port, Secret, ComponentName, HandlerModule, HandlerModuleArgs) ->
+    supervisor:start_link(
+      {local, ?MODULE}, ?MODULE,
+      [Hostname, Port, Secret, ComponentName, HandlerModule, HandlerModuleArgs]).
 
 %% ===================================================================
 %% Supervisor callbacks
 %% ===================================================================
 
-init([]) ->
+init(Args = [_Hostname, _Port, _Secret, _ComponentName, HandlerModule, _HandlerModuleArgs]) ->
     {ok, { {one_for_one, 5, 10},
            [
-            {xmpp_component_connector, {xmpp_component_connector, start_link,
-                                        [["localhost", 8888, "e.skip.local", "secret",
-                                          {xmpp_component_dummy_callback, callback, []},
-                                          no_state]]},
-             permanent, 5000, worker, [xmpp_component_connector,
-                                       xmpp_component_dummy_callback]}
+            {xmpp_component_connector, {xmpp_component_connector, start_link, [Args]},
+             permanent, 5000, worker, [xmpp_component_connector, HandlerModule]}
            ]} }.

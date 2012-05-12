@@ -34,8 +34,23 @@ start() ->
 %% Application callbacks
 %% ===================================================================
 
+get_env(Key) ->
+    case application:get_env(Key) of
+        undefined ->
+            Report = {missing_configuration_key, xmpp_component, Key},
+            error_logger:error_report(Report),
+            exit(Report);
+        {ok, Val} ->
+            Val
+    end.
+
 start(_StartType, _StartArgs) ->
-    xmpp_component_sup:start_link().
+    xmpp_component_sup:start_link(get_env(server_host),
+                                  get_env(server_port),
+                                  get_env(shared_secret),
+                                  get_env(component_name),
+                                  get_env(handler_module),
+                                  get_env(handler_module_args)).
 
 stop(_State) ->
     ok.
