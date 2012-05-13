@@ -22,16 +22,8 @@
   {description, "XMPP Component Protocol (XEP-0114) Library for Erlang"},
   {vsn, "1"},
   {registered, []},
-  {applications, [
-                  kernel,
+  {applications, [kernel,
                   stdlib,
                   crypto,
-                  xmerl
-                 ]},
-  {mod, {xmpp_component_app, []}},
-  {env, [{server_host, "localhost"},
-         {server_port, 8888},
-         {shared_secret, "secret"},
-         {handler_module, xmpp_component_dummy_callback},
-         {handler_module_args, []}]}
+                  xmerl]}
  ]}.

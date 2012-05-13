@@ -16,13 +16,15 @@
 %% along with erlang-xmpp-component.  If not, see
 %% <http://www.gnu.org/licenses/>.
 
--module(xmpp_component_dummy_callback).
+-module(xmpp_component_demo).
 
 -behaviour(xmpp_component).
 -export([init/2, terminate/2, code_change/3, connection_change/2,
          disco_info/2, disco_items/2, vcard/2,
          handle_iq/6, handle_message/3, handle_presence/6,
          handle_stanza/3]).
+
+-export([start/1]).
 
 -include("xmpp_component_xml.hrl").
 -include("xmpp_component_stanza.hrl").
@@ -40,6 +42,14 @@ active_message(Body) ->
     #xmpp_message{body = Body,
                   extensions = [#xe{nsuri = "http://jabber.org/protocol/chatstates",
                                     localName = "active"}]}.
+
+%%---------------------------------------------------------------------------
+
+%% This is used to start the demo application.
+start([Hostname, PortStr, Secret, ComponentName]) ->
+    gen_server:start(xmpp_component_connector,
+                     [Hostname, list_to_integer(PortStr), Secret, ComponentName, ?MODULE, []],
+                     []).
 
 %%---------------------------------------------------------------------------
 

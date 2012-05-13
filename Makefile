@@ -20,5 +20,4 @@ rel:
 run: compile
 	erl -pa ebin \
 		-boot start_sasl \
-		-xmpp_component component_name '"e.'$$(hostname -f)'"' \
-		-s xmpp_component_app
+		-run xmpp_component_demo start localhost 8888 secret "e.$$(hostname -f)"
