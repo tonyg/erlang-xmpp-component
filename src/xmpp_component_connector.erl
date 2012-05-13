@@ -134,7 +134,7 @@ disco_feature_xe(Var) ->
     #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "feature",
         attributes = [#xa{localName = "var", value = Var}]}.
 
-disco_info_reply(Mod, Identities, Features) ->
+disco_info_reply(Identities, Features) ->
     #xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "query",
         children =
             [#xe{nsuri = ?NS_XMPP_DISCO_INFO, localName = "identity",
@@ -164,7 +164,7 @@ dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn = #xe{nsuri = NSURI, localNa
                     case Mod:disco_info(IqTo, OldCBState) of
                         {ok, Identities, Features, NewCBState} ->
                             handle_iq_reply(Header,
-                                            disco_info_reply(Mod, Identities, Features),
+                                            disco_info_reply(Identities, Features),
                                             NewCBState,
                                             State);
                         {error, Details, NewCBState} ->
