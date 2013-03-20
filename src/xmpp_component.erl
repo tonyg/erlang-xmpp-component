@@ -8,6 +8,7 @@ behaviour_info(callbacks) ->
      {terminate, 2}, %% same as gen_server
      {code_change, 3}, %% same as gen_server
      {connection_change, 2}, %% connection state, state
+     {jid_exists, 2}, %% jid name, state
      %% OPTIONAL {disco_info, 2}, %% to, state
      %% OPTIONAL {disco_items, 2}, %% to, state
      %% OPTIONAL {vcard, 2}, %% to, state

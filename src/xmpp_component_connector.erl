@@ -24,10 +24,13 @@
 -behaviour(gen_server).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
 
--export([start_link/1]).
+-export([start_link/1, send_stanza/3]).
 
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
+
+send_stanza(ConnectorPid, Header, Body) ->
+    ok = gen_server:cast(ConnectorPid, {xmpp, Header, Body}).
 
 %%---------------------------------------------------------------------------
 
@@ -233,32 +236,57 @@ handle_iq_error(Header, ElementIn, {ErrorType, Condition, Text}, NewCBState, Sta
 handle_stanza(#xe{nsuri = ?NS_JABBER_COMPONENT_ACCEPT, localName = "handshake"},
               State = #state{state = waiting_for_server_handshake}) ->
     State#state{state = running};
-handle_stanza(E, State = #state{callback_mod = Mod, callback_state = OldCBState}) ->
+handle_stanza(E, State = #state{callback_mod = Mod, callback_state = CBState0}) ->
     io:format("HANDLING ~p~n~s~n", [E, lists:flatten(xmpp_component_xml:to_xml(E))]),
     {Header, Body} = xmpp_component_stanza:from_xe(E),
+    {ToExists, CBState1} = Mod:jid_exists(Header#xmpp_header.to, CBState0),
     case Body of
         #xmpp_iq{element = ElementIn} ->
-            case Header of
-                #xmpp_header{type = "result"} ->
-                    %% No reply permitted. Unsolicited result, too,
-                    %% which is weird! Just ignore it.
-                    State;
-                #xmpp_header{type = IqType, from = IqFrom, to = IqTo} ->
-                    %% "get" or "set". "error" is dealt with elsewhere
-                    %% during parsing.
-                    dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+            if
+                ToExists ->
+                    case Header of
+                        #xmpp_header{type = "result"} ->
+                            %% No reply permitted. Unsolicited result, too,
+                            %% which is weird! Just ignore it.
+                            State;
+                        #xmpp_header{type = IqType, from = IqFrom, to = IqTo} ->
+                            %% "get" or "set". "error" is dealt with elsewhere
+                            %% during parsing.
+                            dispatch_iq(IqFrom, IqTo, IqType, Header, ElementIn, State)
+                    end;
+                true ->
+                    handle_iq_error(Header, ElementIn,
+                                    {"cancel", "service-unavailable", undefined},
+                                    CBState1,
+                                    State)
             end;
         #xmpp_message{} ->
-            {ok, NewCBState} = Mod:handle_message(Header, Body, OldCBState),
-            State#state{callback_state = NewCBState};
+            if
+                ToExists ->
+                    {ok, CBState2} = Mod:handle_message(Header, Body, CBState1),
+                    State#state{callback_state = CBState2};
+                true ->
+                    send_stanza(xmpp_component_stanza:to_xe(
+                                  {xmpp_component_stanza:flip_header(Header, "error"),
+                                   #xmpp_error{stanza_kind = "message",
+                                               error_type = "cancel",
+                                               condition = "service-unavailable"}}),
+                                State#state{callback_state = CBState1})
+            end;
         #xmpp_presence{} ->
-            #xmpp_header{type = PresenceType, from = PresenceFrom, to = PresenceTo} = Header,
-            {ok, NewCBState} = Mod:handle_presence(PresenceFrom, PresenceTo, PresenceType,
-                                                   Header, Body, OldCBState),
-            State#state{callback_state = NewCBState};
+            if
+                ToExists ->
+                    #xmpp_header{type = PresenceType, from = PresenceFrom, to = PresenceTo} =
+                        Header,
+                    {ok, CBState2} = Mod:handle_presence(PresenceFrom, PresenceTo, PresenceType,
+                                                         Header, Body, CBState1),
+                    State#state{callback_state = CBState2};
+                true ->
+                    State#state{callback_state = CBState1}
+            end;
         _ ->
-            {ok, NewCBState} = Mod:handle_stanza(Header, Body, OldCBState),
-            State#state{callback_state = NewCBState}
+            {ok, CBState2} = Mod:handle_stanza(Header, Body, CBState1),
+            State#state{callback_state = CBState2}
     end.
 
 %%---------------------------------------------------------------------------

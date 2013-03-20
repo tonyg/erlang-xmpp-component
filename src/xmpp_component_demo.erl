@@ -21,6 +21,7 @@
 -behaviour(xmpp_component).
 -export([init/2, terminate/2, code_change/3, connection_change/2,
          disco_info/2, disco_items/2, vcard/2,
+         jid_exists/2,
          handle_iq/6, handle_message/3, handle_presence/6,
          handle_stanza/3]).
 
@@ -76,6 +77,9 @@ disco_items(_Who, State) ->
 
 vcard(Who, State) ->
     {ok, [#xe{nsuri = "vcard-temp", localName = "FN", children = ["Robot " ++ Who]}], State}.
+
+jid_exists(_Jid, State) ->
+    {true, State}.
 
 handle_iq(_From, _To, _Type, _Header, _Element, State) ->
     {error, {"cancel", "feature-not-implemented", "Not yet implemented"}, State}.
