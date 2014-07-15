@@ -114,6 +114,8 @@ handle_presence(_From, _To, "subscribe", H, _Body,
                 State = #state{connector_pid = ConnectorPid}) ->
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "subscribed"), #xmpp_presence{}),
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, undefined), #xmpp_presence{}),
+    %% The next line requests presence information in the opposite direction:
+    send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "subscribe"), #xmpp_presence{}),
     {ok, State};
 handle_presence(_From, _To, "unsubscribe", H, _Body,
                 State = #state{connector_pid = ConnectorPid}) ->
