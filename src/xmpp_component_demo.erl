@@ -94,6 +94,10 @@ handle_message(H, #xmpp_message{body = undefined, extensions = Xs}, State) ->
             {ok, send(xmpp_component_stanza:flip_header(H, "chat"),
                       active_message("You have paused!"),
                       State)};
+        [#xe{localName = "active"} | _] ->
+            {ok, send(xmpp_component_stanza:flip_header(H, "chat"),
+                      active_message("You are no longer typing!"),
+                      State)};
         _ ->
             {ok, State}
     end;
