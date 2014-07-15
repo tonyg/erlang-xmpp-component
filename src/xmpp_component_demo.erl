@@ -116,6 +116,10 @@ handle_presence(_From, _To, "unsubscribe", H, _Body,
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "unavailable"), #xmpp_presence{}),
     send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, "unsubscribed"), #xmpp_presence{}),
     {ok, State};
+handle_presence(_From, _To, "probe", H, _Body,
+                State = #state{connector_pid = ConnectorPid}) ->
+    send_to(ConnectorPid, xmpp_component_stanza:flip_header(H, undefined), #xmpp_presence{}),
+    {ok, State};
 handle_presence(_From, _To, _Type, _Header, _Body, State) ->
     io:format("IGNORING ~p~n", [{_Header, _Body}]),
     {ok, State}.
