@@ -1,5 +1,10 @@
 all: compile
 
+DEMOSERVER := localhost
+DEMODOMAIN := "e.$$(hostname -f)"
+DEMOPORT := 8888
+DEMOSECRET := secret
+
 compile:
 	./rebar compile
 
@@ -20,4 +25,5 @@ rel:
 run: compile
 	erl -pa ebin \
 		-boot start_sasl \
-		-run xmpp_component_demo start localhost 8888 secret "e.$$(hostname -f)"
+		-run xmpp_component_demo start \
+			$(DEMOSERVER) $(DEMOPORT) $(DEMOSECRET) $(DEMODOMAIN)
