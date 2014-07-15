@@ -38,6 +38,22 @@ send_stanza(ConnectorPid, Header, Body) ->
                 callback_mod, callback_state,
                 parser_pid, sock, state, stream_id, sax_stack}).
 
+disconnect_and_ensure_connected(State = #state{callback_mod = Mod,
+                                               callback_state = OldCBState}) ->
+    case State#state.parser_pid of
+        none -> ok;
+        ParserPid -> exit(ParserPid, normal)
+    end,
+    case State#state.sock of
+        disconnected -> ok;
+        Sock -> ok = gen_tcp:close(Sock)
+    end,
+    {ok, NewCBState} = Mod:connection_change(disconnected, OldCBState),
+    ensure_connected(State#state{parser_pid = none,
+                                 sock = disconnected,
+                                 callback_state = NewCBState,
+                                 sax_stack = []}).
+
 ensure_connected(State = #state{server_host = ServerHost,
                                 server_port = ServerPort,
                                 callback_mod = Mod,
@@ -127,6 +143,9 @@ handle_sax_event({endElement, NSURI, LocalName, {Prefix, _}},
         [{SiblingsRev, ParentInfo} | StackTailTail] ->
             State#state{sax_stack = [{[Element | SiblingsRev], ParentInfo} | StackTailTail]}
     end;
+handle_sax_event({endElement, "http://etherx.jabber.org/streams", "stream", _},
+                 State = #state{sax_stack = []}) ->
+    disconnect_and_ensure_connected(State);
 handle_sax_event(E, _State = #state{sax_stack = Stack}) ->
     exit({unhandled_sax_event, E, Stack}).
 
@@ -348,14 +367,7 @@ handle_info({send_stanza, E}, State) ->
     {noreply, send_stanza(E, State)};
 handle_info(ensure_connected, State) ->
     {noreply, ensure_connected(State)};
-handle_info({tcp_closed, _Sock}, State = #state{callback_mod = Mod,
-                                                callback_state = OldCBState,
-                                                parser_pid = ParserPid}) ->
-    exit(ParserPid, normal),
-    {ok, NewCBState} = Mod:connection_change(disconnected, OldCBState),
-    {noreply, ensure_connected(State#state{parser_pid = none,
-                                           sock = disconnected,
-                                           callback_state = NewCBState,
-                                           sax_stack = []})};
+handle_info({tcp_closed, _Sock}, State) ->
+    {noreply, disconnect_and_ensure_connected(State)};
 handle_info(_Message, State) ->
     {stop, {bad_info, _Message}, State}.

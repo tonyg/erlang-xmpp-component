@@ -64,6 +64,7 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 connection_change(_ConnectedOrDisconnected, State) ->
+    io:format("CONNECTION CHANGE: ~p~n", [_ConnectedOrDisconnected]),
     {ok, State}.
 
 disco_info(_Who, State) ->
